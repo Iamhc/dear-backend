@@ -23,6 +23,7 @@ const ZUKI_API_KEY = process.env.ZUKI_API_KEY;
 
 // Initialize SQLite database
 const db = new Database("conversations.db");
+db.pragma("foreign_keys = ON");
 
 // Create tables if they don't exist
 db.exec(`
