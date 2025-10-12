@@ -16,7 +16,7 @@ app.use(cors({
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type"]
 }));
-app.options("*", cors());
+
 app.use(bodyParser.json());
 
 const ZUKI_API_KEY = process.env.ZUKI_API_KEY;
