@@ -1,3 +1,4 @@
+<pre>
 Architecture Overview
 Dear AI is a full-stack conversational AI application with persistent data storage. The system consists of three main components:
 
@@ -131,255 +132,84 @@ Disadvantages
 ⚠️ More complex setup
 
 
+</pre>
+1   initial visit - create conversation
 
-initial visit - create conversation
-
-┌─────────────────────────────────────────────────────────────┐
-│                      FIRST VISIT                              │
-└─────────────────────────────────────────────────────────────┘
-
-USER OPENS APP
-    │
-    ↓
-┌─────────────────────────────────────────┐
-│  FRONTEND CHECKS localStorage           │
-│  "Is there a conversationId?"           │
-└─────────────────────────────────────────┘
-    │
-    ├─→ Found? → Skip to Load History
-    │
-    └─→ Not Found? ↓
-        │
-        ↓
-    ┌─────────────────────────────────────────────────────────┐
-    │  FRONTEND REQUESTS: POST /conversation/start            │
-    └─────────────────────────────────────────────────────────┘
-        │
-        ↓
-    ┌─────────────────────────────────────────────────────────┐
-    │  BACKEND CREATES NEW CONVERSATION                       │
-    │  • Generate UUID: "abc-123-uuid"                        │
-    │  • Insert into SQLite: conversations table              │
-    │  • Return UUID to frontend                             │
-    └─────────────────────────────────────────────────────────┘
-        │
-        ↓
-    ┌─────────────────────────────────────────────────────────┐
-    │  FRONTEND RECEIVES UUID                                 │
-    │  • Store in localStorage: "abc-123-uuid"               │
-    │  • Store in memory (React state)                        │
-    │  • Send to Load History function                        │
-    └─────────────────────────────────────────────────────────┘
+graph TD
+    A["User Opens App"] --> B["Frontend checks localStorage"]
+    B --> C{Conversation ID found?}
+    C -->|Yes| D["Load from localStorage"]
+    C -->|No| E["POST /conversation/start"]
+    E --> F["Backend generates UUID"]
+    F --> G["Insert into SQLite conversations table"]
+    G --> H["Return UUID to frontend"]
+    H --> I["Store in localStorage"]
+    I --> J["Store in React state"]
+    J --> K["Display Welcome Message ✅"]
+    D --> K
 
 
 Diagram 2: Page Reload - Retrieve Conversation
-
-
- ┌─────────────────────────────────────────────────────────────┐
-│                   PAGE RELOAD                                 │
-└─────────────────────────────────────────────────────────────┘
-
-USER REFRESHES BROWSER
-    │
-    ↓
-┌─────────────────────────────────────────┐
-│  FRONTEND CHECKS localStorage           │
-│  "Is there a conversationId?"           │
-└─────────────────────────────────────────┘
-    │
-    └─→ FOUND: "abc-123-uuid" ✅
-        │
-        ↓
-    ┌─────────────────────────────────────────────────────────┐
-    │  FRONTEND REQUESTS:                                     │
-    │  GET /conversation/abc-123-uuid                         │
-    └─────────────────────────────────────────────────────────┘
-        │
-        ↓
-    ┌─────────────────────────────────────────────────────────┐
-    │  BACKEND QUERIES SQLite                                 │
-    │  SELECT * FROM messages                                 │
-    │  WHERE conversationId = "abc-123-uuid"                  │
-    │                                                          │
-    │  Result: [                                              │
-    │    {role: "user", content: "Hello"},                    │
-    │    {role: "assistant", content: "Hi there!"},          │
-    │    ...                                                   │
-    │  ]                                                       │
-    └─────────────────────────────────────────────────────────┘
-        │
-        ↓
-    ┌─────────────────────────────────────────────────────────┐
-    │  FRONTEND RECEIVES MESSAGES                             │
-    │  • Display all previous messages                        │
-    │  • Chat history restored ✅                             │
-    └─────────────────────────────────────────────────────────┘
-
-
+graph TD
+    A["User Refreshes Browser"] --> B["Frontend checks localStorage"]
+    B --> C["Retrieve conversationId"]
+    C --> D["GET /conversation/conversationId"]
+    D --> E["Backend queries SQLite"]
+    E --> F["SELECT * FROM messages<br/>WHERE conversationId = ?"]
+    F --> G["Return all previous messages"]
+    G --> H["Frontend displays chat history ✅"]
 
 Diagram 3: Send Message - Save to Database
-
-  ┌─────────────────────────────────────────────────────────────┐
-│              USER SENDS MESSAGE                               │
-└─────────────────────────────────────────────────────────────┘
-
-USER TYPES: "Hello Dear" + SEND
-    │
-    ↓
-┌─────────────────────────────────────────┐
-│  FRONTEND                               │
-│  • Get message from input field         │
-│  • Get conversationId from localStorage │
-│  • Prepare payload                      │
-└─────────────────────────────────────────┘
-    │
-    ↓
-┌─────────────────────────────────────────────────────────────┐
-│  FRONTEND SENDS:                                            │
-│  POST /chat                                                 │
-│  {                                                          │
-│    message: "Hello Dear",                                   │
-│    conversationId: "abc-123-uuid"                           │
-│  }                                                          │
-└─────────────────────────────────────────────────────────────┘
-    │
-    ↓
-┌─────────────────────────────────────────────────────────────┐
-│  BACKEND RECEIVES REQUEST                                   │
-│  1. Extract conversationId: "abc-123-uuid"                  │
-│  2. Extract message: "Hello Dear"                           │
-│  3. Query SQLite for previous messages (for context)        │
-└─────────────────────────────────────────────────────────────┘
-    │
-    ↓
-┌─────────────────────────────────────────────────────────────┐
-│  BACKEND SAVES USER MESSAGE                                 │
-│  INSERT INTO messages:                                      │
-│  {                                                          │
-│    id: "msg-uuid-1",                                        │
-│    conversationId: "abc-123-uuid",  ← LINK TO CONVERSATION  │
-│    role: "user",                                            │
-│    content: "Hello Dear",                                   │
-│    createdAt: current_timestamp                             │
-│  }                                                          │
-└─────────────────────────────────────────────────────────────┘
-    │
-    ↓
-┌─────────────────────────────────────────────────────────────┐
-│  AI GENERATES RESPONSE                                      │
-│  (Using context from previous messages)                     │
-│  Response: "Hi! How can I help you today?"                  │
-└─────────────────────────────────────────────────────────────┘
-    │
-    ↓
-┌─────────────────────────────────────────────────────────────┐
-│  BACKEND SAVES AI RESPONSE                                  │
-│  INSERT INTO messages:                                      │
-│  {                                                          │
-│    id: "msg-uuid-2",                                        │
-│    conversationId: "abc-123-uuid",  ← SAME CONVERSATION ID  │
-│    role: "assistant",                                       │
-│    content: "Hi! How can I help you today?",               │
-│    createdAt: current_timestamp                             │
-│  }                                                          │
-└─────────────────────────────────────────────────────────────┘
-    │
-    ↓
-┌─────────────────────────────────────────┐
-│  FRONTEND DISPLAYS                      │
-│  • User message in chat                 │
-│  • AI response in chat                  │
-│  • Both now in database ✅              │
-└─────────────────────────────────────────┘
-
-
+graph TD
+    A["User types message"] --> B["Click Send"]
+    B --> C["Prepare payload:<br/>message + conversationId"]
+    C --> D["POST /chat"]
+    D --> E["Backend receives request"]
+    E --> F["Extract conversationId from body"]
+    F --> G["Query previous messages for context"]
+    G --> H["Save user message to SQLite"]
+    H --> I["Generate AI response"]
+    I --> J["Save AI response to SQLite"]
+    J --> K["Return response to frontend"]
+    K --> L["Display in chat ✅"]
     
-        │
-        ↓
-    DISPLAY WELCOME MESSAGE ✅
-
-
-
-
 Diagram 4: Data Storage Locations
-
-
-┌──────────────────────────────────────────────────────────────────┐
-│                     DATA STORAGE OVERVIEW                         │
-└──────────────────────────────────────────────────────────────────┘
-
-                          USER'S BROWSER
-                                │
-                    ┌───────────┴───────────┐
-                    │                       │
-              ┌─────────────┐          ┌──────────┐
-              │ localStorage│          │   RAM    │
-              │             │          │          │
-              │ Key: "conv- │          │ React    │
-              │ Id123"      │          │ State    │
-              │             │          │          │
-              │ Value:      │          │ Messages │
-              │ abc-123-... │          │ UI data  │
-              └─────────────┘          └──────────┘
-
-
-                    BACKEND SERVER (dear-backend.onrender.com)
-                                │
-                    ┌───────────┴────────────┐
-                    │                        │
-                ┌──────────────┐        ┌─────────────┐
-                │ SQLite DB    │        │   Memory    │
-                │              │        │  (Variables)│
-                │conversations│        │             │
-                │   table      │        │ API keys,   │
-                │              │        │ Config      │
-                ├──────────────┤        └─────────────┘
-                │ id: abc-123  │
-                │ created_at   │
-                │ updated_at   │
-                └──────────────┘
-                        │
-                ┌───────┴─────────┐
-                │                 │
-            ┌───────────────┐  ┌──────────────┐
-            │  messages     │  │  messages    │
-            │   table       │  │   table      │
-            │               │  │              │
-            │ id: msg-1     │  │ id: msg-2    │
-            │ convId: abc   │  │ convId: abc  │
-            │ role: user    │  │ role: asst   │
-            │ content: "Hi" │  │ content: ... │
-            └───────────────┘  └──────────────┘
-
-
-CONNECTION FLOW:
-├─ Browser (localStorage) has KEY: "abc-123-uuid"
-│
-├─ KEY sent to Backend with each request
-│
-├─ Backend uses KEY to query SQLite
-│
-└─ All messages with matching KEY returned
-   (and KEY becomes conversationId foreign key)
-
+graph LR
+    A["Before Clear"] --> B["localStorage: abc-123 ✅<br/>SQLite: All messages ✅"]
+    
+    B --> C["User clears browser cache"]
+    
+    C --> D["After Clear"]
+    D --> E["localStorage: DELETED ❌<br/>SQLite: Messages ORPHANED ⚠️"]
+    
+    E --> F["New conversation created<br/>New ID: xyz-789"]
+    
+    F --> G["Old messages unreachable<br/>DATA LOST 🔴"]
+    
+    style B fill:#90EE90
+    style E fill:#FFB6C6
+    style G fill:#FF6B6B
 
 
 Diagram 5: What Happens When Cache is Cleared
 
-
-┌──────────────────────────────────────────────────────────────────┐
-│             CACHE CLEAR SCENARIO                                  │
-└──────────────────────────────────────────────────────────────────┘
-
-BEFORE CLEAR:
-┌─ Browser localStorage: "abc-123-uuid" ✅
-├─ SQLite Database: All messages stored ✅
-└─ User can access everything ✅
-
-
+graph TD
+    A["User Creates Account"] --> B["Email + Password stored"]
+    B --> C["User logs in"]
+    C --> D["Backend verifies credentials"]
+    D --> E["Create JWT token"]
+    E --> F["Link all conversations to userId"]
+    F --> G["User chats"]
+    G --> H["Conversation linked to userId"]
+    H --> I["User clears cache"]
+    I --> J["User logs back in"]
+    J --> K["Retrieve all conversations for user"]
+    K --> L["Data NEVER lost ✅"]
+    
+    style L fill:#90EE90
 USER: Browser Settings → Clear Cache/Cookies
 
-
+<pre>
 AFTER CLEAR:
 ┌─ Browser localStorage: DELETED ❌
 ├─ SQLite Database: All messages STILL THERE ✅ (but orphaned)
@@ -417,4 +247,4 @@ Messages not persisting
 Cache cleared, data lost
 
 ✅ Expected behavior (use login system for prevention)
-✅ Consider adding authentication
+✅ Consider adding authentication  </pre>
