@@ -133,82 +133,90 @@ Disadvantages
 
 
 </pre>
+<pre>
 1   initial visit - create conversation
-
-graph TD
-    A["User Opens App"] --> B["Frontend checks localStorage"]
-    B --> C{Conversation ID found?}
-    C -->|Yes| D["Load from localStorage"]
-    C -->|No| E["POST /conversation/start"]
-    E --> F["Backend generates UUID"]
-    F --> G["Insert into SQLite conversations table"]
-    G --> H["Return UUID to frontend"]
-    H --> I["Store in localStorage"]
-    I --> J["Store in React state"]
-    J --> K["Display Welcome Message ✅"]
-    D --> K
+User opens app
+    ↓
+Check localStorage for ID
+    ↓
+No ID? Request /conversation/start
+    ↓
+Backend generates UUID
+    ↓
+Insert into SQLite
+    ↓
+Return UUID to frontend
+    ↓
+Save to localStorage
+    ↓
+Display welcome message ✅
 
 
 Diagram 2: Page Reload - Retrieve Conversation
-graph TD
-    A["User Refreshes Browser"] --> B["Frontend checks localStorage"]
-    B --> C["Retrieve conversationId"]
-    C --> D["GET /conversation/conversationId"]
-    D --> E["Backend queries SQLite"]
-    E --> F["SELECT * FROM messages<br/>WHERE conversationId = ?"]
-    F --> G["Return all previous messages"]
-    G --> H["Frontend displays chat history ✅"]
+User refreshes browser
+    ↓
+Get ID from localStorage
+    ↓
+Send GET /conversation/{id}
+    ↓
+Backend queries SQLite
+    ↓
+SELECT * FROM messages WHERE conversationId = id
+    ↓
+Return all previous messages
+    ↓
+Display chat history ✅
 
 Diagram 3: Send Message - Save to Database
-graph TD
-    A["User types message"] --> B["Click Send"]
-    B --> C["Prepare payload:<br/>message + conversationId"]
-    C --> D["POST /chat"]
-    D --> E["Backend receives request"]
-    E --> F["Extract conversationId from body"]
-    F --> G["Query previous messages for context"]
-    G --> H["Save user message to SQLite"]
-    H --> I["Generate AI response"]
-    I --> J["Save AI response to SQLite"]
-    J --> K["Return response to frontend"]
-    K --> L["Display in chat ✅"]
+User types message
+    ↓
+Get conversationId from localStorage
+    ↓
+Send POST /chat with message + conversationId
+    ↓
+Backend saves user message to SQLite
+    ↓
+Generate AI response
+    ↓
+Save AI response to SQLite
+    ↓
+Return response to frontend
+    ↓
+Display in chat ✅
     
 Diagram 4: Data Storage Locations
 graph LR
-    A["Before Clear"] --> B["localStorage: abc-123 ✅<br/>SQLite: All messages ✅"]
-    
-    B --> C["User clears browser cache"]
-    
-    C --> D["After Clear"]
-    D --> E["localStorage: DELETED ❌<br/>SQLite: Messages ORPHANED ⚠️"]
-    
-    E --> F["New conversation created<br/>New ID: xyz-789"]
-    
-    F --> G["Old messages unreachable<br/>DATA LOST 🔴"]
-    
-    style B fill:#90EE90
-    style E fill:#FFB6C6
-    style G fill:#FF6B6B
+   Browser (localStorage)
+├─ conversationId: "abc-123-uuid"
 
+Backend Server (SQLite)
+├─ conversations table
+│  └─ id: "abc-123-uuid", createdAt, updatedAt
+│
+└─ messages table
+   ├─ id: "msg-1", conversationId: "abc-123-uuid", role: "user", content: "Hello"
+   ├─ id: "msg-2", conversationId: "abc-123-uuid", role: "assistant", content: "Hi!"
+   └─ ...more messages...
+
+Connection:
+ID in localStorage → Matches ID in SQLite → Returns all matching messages ✅
 
 Diagram 5: What Happens When Cache is Cleared
+BEFORE CLEAR:
+├─ localStorage: "abc-123-uuid" ✅
+└─ SQLite: All messages stored ✅
 
-graph TD
-    A["User Creates Account"] --> B["Email + Password stored"]
-    B --> C["User logs in"]
-    C --> D["Backend verifies credentials"]
-    D --> E["Create JWT token"]
-    E --> F["Link all conversations to userId"]
-    F --> G["User chats"]
-    G --> H["Conversation linked to userId"]
-    H --> I["User clears cache"]
-    I --> J["User logs back in"]
-    J --> K["Retrieve all conversations for user"]
-    K --> L["Data NEVER lost ✅"]
-    
-    style L fill:#90EE90
-USER: Browser Settings → Clear Cache/Cookies
+AFTER CLEAR:
+├─ localStorage: DELETED ❌
+└─ SQLite: Messages orphaned (can't access without ID) ❌
 
+RESULT:
+├─ New ID generated: "xyz-789-uuid"
+├─ Old messages unreachable
+└─ Data lost (connection broken)
+
+   
+</pre>
 <pre>
 AFTER CLEAR:
 ┌─ Browser localStorage: DELETED ❌
