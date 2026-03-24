@@ -3,29 +3,32 @@ import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import fetch from "node-fetch";
 import cors from "cors";
-import { StateGraph } from "@langchain/langgraph";
-import { Annotation } from "@langchain/langgraph";
+import { StateGraph, Annotation } from "@langchain/langgraph";
 import Database from "better-sqlite3";
 import { v4 as uuidv4 } from "uuid";
 
+// ✅ RAG Imports
+import { OpenAIEmbeddings } from "@langchain/openai";
+import { MemoryVectorStore } from "langchain/vectorstores/memory";
+
 dotenv.config();
 const app = express();
+
 app.use(cors({
   origin: "*",
   credentials: true,
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type"]
 }));
 
 app.use(bodyParser.json());
 
 const ZUKI_API_KEY = process.env.ZUKI_API_KEY;
 
-// Initialize SQLite database
+/* =========================
+   🗄️ DATABASE SETUP
+========================= */
 const db = new Database("conversations.db");
 db.pragma("foreign_keys = ON");
 
-// Create tables if they don't exist
 db.exec(`
   CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
@@ -43,66 +46,83 @@ db.exec(`
   );
 `);
 
-// Helper functions for database operations
 function createConversation() {
-  const conversationId = uuidv4();
-  const stmt = db.prepare("INSERT INTO conversations (id) VALUES (?)");
-  stmt.run(conversationId);
-  return conversationId;
+  const id = uuidv4();
+  db.prepare("INSERT INTO conversations (id) VALUES (?)").run(id);
+  return id;
 }
 
 function getConversationHistory(conversationId) {
-  const stmt = db.prepare(
+  return db.prepare(
     "SELECT role, content FROM messages WHERE conversationId = ? ORDER BY createdAt ASC"
-  );
-  return stmt.all(conversationId);
+  ).all(conversationId);
 }
 
 function saveMessage(conversationId, role, content) {
-  const messageId = uuidv4();
-  const stmt = db.prepare(
+  const id = uuidv4();
+
+  db.prepare(
     "INSERT INTO messages (id, conversationId, role, content) VALUES (?, ?, ?, ?)"
-  );
-  stmt.run(messageId, conversationId, role, content);
+  ).run(id, conversationId, role, content);
 
-  // Update conversation's updatedAt timestamp
-  const updateStmt = db.prepare(
+  db.prepare(
     "UPDATE conversations SET updatedAt = CURRENT_TIMESTAMP WHERE id = ?"
-  );
-  updateStmt.run(conversationId);
-
-  return messageId;
+  ).run(conversationId);
 }
 
-// Define state schema
-const StateAnnotation = Annotation.Root({
-  lastMessage: Annotation({
-    reducer: (x, y) => y,
-  }),
-  conversationId: Annotation({
-    reducer: (x, y) => y,
-  }),
-  memory: Annotation({
-    reducer: (x, y) => y || [],
-  }),
-  reply: Annotation({
-    reducer: (x, y) => y || "",
-  }),
+/* =========================
+   🧠 RAG SETUP
+========================= */
+
+// Embeddings
+const embeddings = new OpenAIEmbeddings({
+  apiKey: ZUKI_API_KEY,
 });
 
-// Create the StateGraph
+// Vector DB (in-memory)
+const vectorStore = new MemoryVectorStore(embeddings);
+
+// Load initial knowledge
+async function loadDocs() {
+  await vectorStore.addDocuments([
+    { pageContent: "LangChain is used to build AI applications." },
+    { pageContent: "RAG means Retrieval Augmented Generation." },
+    { pageContent: "SQLite stores structured chat history persistently." }
+  ]);
+}
+
+await loadDocs();
+
+/* =========================
+   🔄 LANGGRAPH SETUP
+========================= */
+
+const StateAnnotation = Annotation.Root({
+  lastMessage: Annotation({ reducer: (x, y) => y }),
+  conversationId: Annotation({ reducer: (x, y) => y }),
+  memory: Annotation({ reducer: (x, y) => y || [] }),
+  reply: Annotation({ reducer: (x, y) => y || "" }),
+});
+
 const graph = new StateGraph(StateAnnotation);
 
-// Add the user node
 graph.addNode("user", async (state) => {
-  const userMessage = state.lastMessage;
-  const conversationId = state.conversationId;
-  const prevMemory = state.memory || [];
+  const { lastMessage, conversationId, memory } = state;
 
   try {
-    // Save user message to database
-    saveMessage(conversationId, "user", userMessage);
+    // ✅ Save user message
+    saveMessage(conversationId, "user", lastMessage);
 
+    /* =========================
+       🔍 RAG STEP
+    ========================= */
+    const docs = await vectorStore.similaritySearch(lastMessage, 3);
+
+    const context = docs.map(d => d.pageContent).join("\n");
+
+    /* =========================
+       🤖 LLM CALL
+    ========================= */
     const response = await fetch(
       "https://api.zukijourney.com/v1/chat/completions",
       {
@@ -114,123 +134,92 @@ graph.addNode("user", async (state) => {
         body: JSON.stringify({
           model: "gpt-4o-mini",
           messages: [
-            { role: "system", content: "You are Neo, a helpful AI assistant." },
-            ...prevMemory,
-            { role: "user", content: userMessage },
+            {
+              role: "system",
+              content: `You are Neo, an AI assistant. Use this context:\n${context}`,
+            },
+            ...memory,
+            { role: "user", content: lastMessage },
           ],
         }),
       }
     );
 
     const data = await response.json();
+
     const reply =
-      data?.choices?.[0]?.message?.content || "🤖 Sorry, no response.";
+      data?.choices?.[0]?.message?.content || "🤖 No response.";
 
-    // Save assistant reply to database
+    // ✅ Save reply
     saveMessage(conversationId, "assistant", reply);
-
-    const updatedMemory = [
-      ...prevMemory,
-      { role: "user", content: userMessage },
-      { role: "assistant", content: reply },
-    ];
 
     return {
       reply,
-      memory: updatedMemory,
-      lastMessage: userMessage,
+      memory: [
+        ...memory,
+        { role: "user", content: lastMessage },
+        { role: "assistant", content: reply },
+      ],
+      lastMessage,
       conversationId,
     };
   } catch (err) {
-    console.error("API Error:", err);
-    saveMessage(conversationId, "assistant", "🤖 Error communicating with API");
-
+    console.error(err);
     return {
-      reply: "🤖 Error communicating with API",
-      memory: prevMemory,
-      lastMessage: userMessage,
+      reply: "Error occurred",
+      memory,
+      lastMessage,
       conversationId,
     };
   }
 });
 
-// Set entry and finish points
 graph.setEntryPoint("user");
 graph.setFinishPoint("user");
 
-// Compile the graph
 const compiledGraph = graph.compile();
 
+/* =========================
+   🚀 ROUTES
+========================= */
+
 app.get("/", (req, res) =>
-  res.send("🤖 Neo (Zuki + LangGraph + SQLite + UUID) is running!")
+  res.send("🤖 Neo + RAG is running!")
 );
 
-// Start a new conversation
 app.post("/conversation/start", (req, res) => {
-  try {
-    const conversationId = createConversation();
-    res.json({ conversationId });
-  } catch (err) {
-    console.error("Error starting conversation:", err);
-    res.status(500).json({ error: String(err) });
-  }
+  const id = createConversation();
+  res.json({ conversationId: id });
 });
 
-// Chat endpoint
 app.post("/chat", async (req, res) => {
-  try {
-    const userMsg = req.body.message;
-    const conversationId = req.body.conversationId;
+  const { message, conversationId } = req.body;
 
-    if (!userMsg) return res.status(400).json({ error: "message is required" });
-    if (!conversationId)
-      return res.status(400).json({ error: "conversationId is required" });
-
-    // Fetch conversation history from database
-    const history = getConversationHistory(conversationId);
-
-    const result = await compiledGraph.invoke({
-      lastMessage: userMsg,
-      conversationId,
-      memory: history,
-    });
-
-    res.json({ reply: result.reply, conversationId });
-  } catch (err) {
-    console.error("❌ Error:", err);
-    res.status(500).json({ error: String(err) });
+  if (!message || !conversationId) {
+    return res.status(400).json({ error: "Missing fields" });
   }
+
+  const history = getConversationHistory(conversationId);
+
+  const result = await compiledGraph.invoke({
+    lastMessage: message,
+    conversationId,
+    memory: history,
+  });
+
+  res.json({ reply: result.reply });
 });
 
-// Get conversation history
-app.get("/conversation/:conversationId", (req, res) => {
-  try {
-    const { conversationId } = req.params;
-    const history = getConversationHistory(conversationId);
-    res.json({ conversationId, messages: history });
-  } catch (err) {
-    console.error("Error fetching conversation:", err);
-    res.status(500).json({ error: String(err) });
-  }
+app.get("/conversation/:id", (req, res) => {
+  const history = getConversationHistory(req.params.id);
+  res.json({ messages: history });
 });
 
-// Get all conversations
-app.get("/conversations", (req, res) => {
-  try {
-    const stmt = db.prepare(
-      "SELECT id, createdAt, updatedAt FROM conversations ORDER BY updatedAt DESC"
-    );
-    const conversations = stmt.all();
-    res.json({ conversations });
-  } catch (err) {
-    console.error("Error fetching conversations:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+/* =========================
+   🏁 START SERVER
+========================= */
 
-const PORT = process.env.PORT || 3000;
+const PORT = 3000;
 app.listen(PORT, () =>
-  console.log(
-    `🚀 Neo (Zuki + LangGraph + SQLite + UUID) running on port ${PORT}`
-  )
+  console.log(`🚀 Server running on http://localhost:${PORT}`)
 );
